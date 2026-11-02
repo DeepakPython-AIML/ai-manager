@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Starts, stops and restarts the platform. Usage: ./aimanager --start | --stop | --restart
+set -uo pipefail
+
+# Resolve symlinks so the script also works when linked into a directory on PATH.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  TARGET="$(readlink "$SOURCE")"
+  case "$TARGET" in
+    /*) SOURCE="$TARGET" ;;
+    *) SOURCE="$(dirname "$SOURCE")/$TARGET" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")" && pwd)"
+
+RUN_DIR="$ROOT/.run"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+START_TIMEOUT_S=60
+
+usage() {
+  echo "Usage: aimanager --start | --stop | --restart"
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+pid_of() {
+  local file="$RUN_DIR/$1.pid" pid
+  [ -f "$file" ] || return 1
+  pid="$(cat "$file")"
+  kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
+port_in_use() {
+  lsof -ti "tcp:$1" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+# Children first: next dev runs its server in a child process.
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    kill_tree "$child"
+  done
+  kill "$1" 2>/dev/null
+}
+
+setup() {
+  command -v uv >/dev/null || die "uv is not installed: https://docs.astral.sh/uv/"
+  command -v npm >/dev/null || die "npm is not installed: https://nodejs.org/"
+  mkdir -p "$RUN_DIR"
+  if [ ! -f "$ROOT/.env" ]; then
+    cp "$ROOT/.env.example" "$ROOT/.env"
+    echo "Created .env from .env.example. Add your AWS keys to it."
+  fi
+  echo "Installing backend dependencies..."
+  (cd "$ROOT" && uv sync --quiet) || die "uv sync failed"
+  if [ ! -d "$ROOT/frontend/node_modules" ]; then
+    echo "Installing frontend dependencies..."
+    (cd "$ROOT/frontend" && npm install --silent) || die "npm install failed"
+  fi
+}
+
+start_service() {
+  local name="$1" port="$2" url="$3" dir="$4"
+  shift 4
+  if pid_of "$name" >/dev/null; then
+    echo "$name is already running ($url)"
+    return 0
+  fi
+  port_in_use "$port" && { echo "Error: port $port is used by another process" >&2; return 1; }
+
+  (
+    cd "$dir" || exit 1
+    nohup "$@" >"$RUN_DIR/$name.log" 2>&1 </dev/null &
+    echo $! >"$RUN_DIR/$name.pid"
+  )
+
+  local waited=0
+  until curl -sf -o /dev/null "$url"; do
+    if ! pid_of "$name" >/dev/null || [ "$waited" -ge "$START_TIMEOUT_S" ]; then
+      echo "Error: $name failed to start. Last log lines:" >&2
+      tail -n 15 "$RUN_DIR/$name.log" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "$name started: $url"
+}
+
+stop_service() {
+  local name="$1" pid waited=0
+  if ! pid="$(pid_of "$name")"; then
+    rm -f "$RUN_DIR/$name.pid"
+    echo "$name is not running"
+    return 0
+  fi
+  kill_tree "$pid"
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge 10 ]; then
+      kill -9 "$pid" 2>/dev/null
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  rm -f "$RUN_DIR/$name.pid"
+  echo "$name stopped"
+}
+
+start_all() {
+  setup
+  start_service backend "$BACKEND_PORT" "http://127.0.0.1:$BACKEND_PORT/healthz" "$ROOT" \
+    "$ROOT/.venv/bin/uvicorn" ai_maneger.main:app --port "$BACKEND_PORT" || { stop_all; exit 1; }
+  BACKEND_URL="http://127.0.0.1:$BACKEND_PORT" \
+    start_service frontend "$FRONTEND_PORT" "http://127.0.0.1:$FRONTEND_PORT/login" "$ROOT/frontend" \
+    "$ROOT/frontend/node_modules/.bin/next" dev -p "$FRONTEND_PORT" || { stop_all; exit 1; }
+  echo "Open http://localhost:$FRONTEND_PORT"
+}
+
+stop_all() {
+  # Frontend first, so nothing is left calling a stopped API.
+  stop_service frontend
+  stop_service backend
+}
+
+[ $# -eq 1 ] || { usage; exit 1; }
+case "$1" in
+  --start) start_all ;;
+  --stop) stop_all ;;
+  --restart) stop_all; start_all ;;
+  *) usage; exit 1 ;;
+esac
