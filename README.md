@@ -13,6 +13,7 @@ simulated; no real account is changed.
 - [Run the app with aimanager](#run-the-app-with-aimanager)
 - [Snapshots](#snapshots)
 - [Current status](#current-status)
+- [Stop or end an agent](#stop-or-end-an-agent)
 - [How the two engines work](#how-the-two-engines-work)
 - [Architecture](#architecture)
 - [Security and reliability](#security-and-reliability)
@@ -128,6 +129,21 @@ A failed run shows its reason and full trace, with a **Retry run** button. This 
 | LangGraph + LangChain engine | **Working.** Real model calls through Groq, including a full approval run |
 | Amazon Bedrock engine | **Blocked.** The AWS account is not authorised to call models (see below), so every run currently switches to LangGraph |
 | PostgreSQL, Cognito mode | Implemented but not yet run |
+
+## Stop or end an agent
+
+Admins and operators can do this from the dashboard or an agent's page. Agents are never deleted, so their
+runs and audit history stay available.
+
+| Action | Status | Can be undone | Effect |
+| --- | --- | --- | --- |
+| **Stop** | `stopped` | Yes, with **Start** | Refuses new runs, approvals and retries. Pending requests stay in Approvals and can still be rejected, or approved after **Start** |
+| **End agent** | `ended` | No | Permanently retires the agent, stops its settings being changed, and rejects anything awaiting approval |
+
+A run already in progress can finish its analysis, but its action will not execute once the agent is stopped
+or ended; it is marked `failed` with that reason.
+
+The API endpoints are `POST /api/agents/{id}/stop`, `/start` and `/end`.
 
 ## How the two engines work
 

@@ -7,7 +7,8 @@ export type Agent = {
   id: string; name: string; description: string; kind: string; model_id: string | null;
   fallback_model_id: string | null;
   system_prompt: string; approval_policy: "sensitive" | "always"; allowed_actions: string[];
-  enabled: boolean; created_at: string; status?: "idle" | "busy" | "awaiting_approval" | "disabled"; total_runs?: number;
+  enabled: boolean; ended_at: string | null; created_at: string; total_runs?: number;
+  status?: "idle" | "busy" | "awaiting_approval" | "stopped" | "ended";
 };
 export type RunStatus = "queued" | "running" | "switching_engine" | "awaiting_approval" | "executing" | "completed" | "rejected" | "failed";
 export type RunEvent = {

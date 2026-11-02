@@ -10,7 +10,7 @@ from .config import get_settings
 from .db import Agent, Run, RunEvent, now, sessions
 from .engines import ENGINE_ORDER, ENGINES
 from .llm import LLMError
-from .workflow import AgentConfig, RunContext, State
+from .workflow import AgentConfig, AgentInactive, RunContext, State
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ async def _run_engine(name: str, run: Run, state: State, ctx: RunContext, status
                      f"{engine.label}: attempt {attempt}/{s.run_attempts}", actor="system")
         try:
             return await asyncio.wait_for(engine.run(state, ctx), s.run_timeout_s)
-        except LLMError:
+        except (LLMError, AgentInactive):
             raise
         except Exception as e:  # noqa: BLE001 - a run failure must never kill the worker
             log.exception("run %s attempt %s failed", run.id, attempt)
@@ -86,6 +86,13 @@ async def _switch_engine(run: Run, target: str, reason: str) -> None:
     await asyncio.sleep(get_settings().engine_switch_delay_s)
 
 
+async def _check_active(agent_id: str) -> None:
+    async with sessions()() as s:
+        agent = await s.get(Agent, agent_id)
+    if not agent.enabled:
+        raise AgentInactive("Agent was stopped before the action ran")
+
+
 async def execute_run(run_id: str) -> None:
     async with sessions()() as session:
         run = await session.get(Run, run_id)
@@ -96,6 +103,7 @@ async def execute_run(run_id: str) -> None:
                           agent.approval_policy, agent.allowed_actions),
         emit=lambda type_, message, data=None: record(run.tenant_id, run_id, type_, message, data),
         save=lambda **fields: _patch(run_id, **fields),
+        check_active=lambda: _check_active(agent.id),
     )
     state = {"input": run.input, "decision": run.decision, "analysis": run.analysis, "proposal": run.proposal}
     # An approved action stays on the engine that proposed it; anything else starts at Bedrock again.
@@ -115,6 +123,9 @@ async def execute_run(run_id: str) -> None:
             if fallback:
                 await _switch_engine(run, fallback, str(e))
                 continue
+            break
+        except AgentInactive as e:
+            error = str(e)
             break
         except Exception as e:  # noqa: BLE001 - only model failures switch engine, never action failures
             error = f"{type(e).__name__}: {e}"[:500]

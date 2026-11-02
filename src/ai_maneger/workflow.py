@@ -74,6 +74,10 @@ async def simulate_action(action: str, target: str) -> dict[str, Any]:
     }
 
 
+class AgentInactive(Exception):
+    """The agent was stopped or ended, so its action must not run."""
+
+
 class State(TypedDict, total=False):
     input: str
     analysis: dict
@@ -97,6 +101,7 @@ class RunContext:
     agent: AgentConfig
     emit: Callable[..., Awaitable[None]]
     save: Callable[..., Awaitable[None]]
+    check_active: Callable[[], Awaitable[None]]
 
 
 Complete = Callable[[str, str, RunContext], Awaitable[dict]]
@@ -139,6 +144,7 @@ async def propose(state: State, ctx: RunContext, complete: Complete) -> State:
 
 
 async def execute(state: State, ctx: RunContext) -> State:
+    await ctx.check_active()
     proposal = state["proposal"]
     outcome = await simulate_action(proposal["action"], proposal.get("target", "requester"))
     await ctx.save(outcome=outcome)

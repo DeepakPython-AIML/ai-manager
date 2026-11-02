@@ -165,7 +165,12 @@ async def list_agents(p: Principal = Depends(require("read")), session: AsyncSes
     out = []
     for a in agents:
         total, busy, waiting = counts.get(a.id, (0, 0, 0))
-        status = "disabled" if not a.enabled else "busy" if busy else "awaiting_approval" if waiting else "idle"
+        if a.ended_at:
+            status = "ended"
+        elif not a.enabled:
+            status = "stopped"
+        else:
+            status = "busy" if busy else "awaiting_approval" if waiting else "idle"
         out.append(sc.AgentSummary(**sc.AgentOut.model_validate(a).model_dump(), status=status, total_runs=total))
     return out
 
@@ -188,13 +193,67 @@ async def get_agent(agent_id: str, p: Principal = Depends(require("read")), sess
 @router.patch("/agents/{agent_id}", response_model=sc.AgentOut)
 async def update_agent(agent_id: str, body: sc.AgentUpdate, p: Principal = Depends(require("manage_agents")),
                        session: AsyncSession = Session):
-    agent = await scoped(session, Agent, agent_id, p)
+    agent = await _not_ended(session, agent_id, p)
     changes = body.model_dump(exclude_unset=True)
     for key, value in changes.items():
         setattr(agent, key, value)
     await session.commit()
     await record(p.tenant_id, None, "agent_updated", f"Agent {agent.name} updated",
                  {"fields": sorted(changes)}, actor=p.user_id)
+    return agent
+
+
+async def _not_ended(session: AsyncSession, agent_id: str, p: Principal) -> Agent:
+    agent = await scoped(session, Agent, agent_id, p)
+    if agent.ended_at:
+        raise HTTPException(409, "Agent has ended and can't be changed")
+    return agent
+
+
+def _require_active(agent: Agent) -> None:
+    if not agent.enabled:
+        raise HTTPException(409, f"Agent is {'ended' if agent.ended_at else 'stopped'}")
+
+
+async def _set_enabled(agent_id: str, enabled: bool, p: Principal, session: AsyncSession) -> Agent:
+    agent = await _not_ended(session, agent_id, p)
+    if agent.enabled != enabled:
+        agent.enabled = enabled
+        await session.commit()
+        word = "started" if enabled else "stopped"
+        await record(p.tenant_id, None, f"agent_{word}", f"Agent {agent.name} {word}", actor=p.user_id)
+    return agent
+
+
+@router.post("/agents/{agent_id}/stop", response_model=sc.AgentOut)
+async def stop_agent(agent_id: str, p: Principal = Depends(require("manage_agents")),
+                     session: AsyncSession = Session):
+    return await _set_enabled(agent_id, False, p, session)
+
+
+@router.post("/agents/{agent_id}/start", response_model=sc.AgentOut)
+async def start_agent(agent_id: str, p: Principal = Depends(require("manage_agents")),
+                      session: AsyncSession = Session):
+    return await _set_enabled(agent_id, True, p, session)
+
+
+@router.post("/agents/{agent_id}/end", response_model=sc.AgentOut)
+async def end_agent(agent_id: str, p: Principal = Depends(require("manage_agents")),
+                    session: AsyncSession = Session):
+    """Retire an agent for good. The agent and its history are kept."""
+    agent = await _not_ended(session, agent_id, p)
+    agent.enabled = False
+    agent.ended_at = now()
+    await session.commit()
+    await record(p.tenant_id, None, "agent_ended", f"Agent {agent.name} ended", actor=p.user_id)
+    # Nothing can execute any more, so don't leave approvers a decision that can't take effect.
+    pending = (await session.scalars(
+        select(Run).where(Run.agent_id == agent.id, Run.status == "awaiting_approval")
+    )).all()
+    for run in pending:
+        if await transition(session, run, ("awaiting_approval",), status="rejected", decision="rejected",
+                            decided_by=p.user_id, decision_note="Agent was ended", decided_at=now()):
+            await record(p.tenant_id, run.id, "rejected", "Rejected because the agent was ended", actor=p.user_id)
     return agent
 
 
@@ -205,8 +264,7 @@ async def update_agent(agent_id: str, body: sc.AgentUpdate, p: Principal = Depen
 async def start_run(agent_id: str, body: sc.RunCreate, p: Principal = Depends(require("run")),
                     session: AsyncSession = Session):
     agent = await scoped(session, Agent, agent_id, p)
-    if not agent.enabled:
-        raise HTTPException(409, "Agent is disabled")
+    _require_active(agent)
     run = Run(tenant_id=p.tenant_id, agent_id=agent.id, requested_by=p.user_id, input=body.input)
     session.add(run)
     await session.commit()
@@ -246,6 +304,8 @@ async def decide(run_id: str, body: sc.Decision, p: Principal = Depends(require(
     if self_decision and not get_settings().allow_self_approval:
         raise HTTPException(403, "You cannot decide on your own request")
     approved = body.decision == "approved"
+    if approved:
+        _require_active(await scoped(session, Agent, run.agent_id, p))
     won = await transition(
         session, run, ("awaiting_approval",),
         status="executing" if approved else "rejected",
@@ -264,6 +324,7 @@ async def decide(run_id: str, body: sc.Decision, p: Principal = Depends(require(
 @router.post("/runs/{run_id}/retry", response_model=sc.RunOut, status_code=202)
 async def retry(run_id: str, p: Principal = Depends(require("run")), session: AsyncSession = Session):
     run = await scoped(session, Run, run_id, p)
+    _require_active(await scoped(session, Agent, run.agent_id, p))
     if not await transition(session, run, ("failed",), status="queued", error=None):
         raise HTTPException(409, f"Run is '{run.status}', only failed runs can be retried")
     await record(p.tenant_id, run.id, "retried", f"{p.email} retried the run", actor=p.user_id)

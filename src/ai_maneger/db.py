@@ -64,7 +64,8 @@ class Agent(Base):
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     approval_policy: Mapped[str] = mapped_column(String(20), default="sensitive")  # sensitive | always
     allowed_actions: Mapped[list] = mapped_column(JSON, default=list)
-    enabled: Mapped[bool] = mapped_column(default=True)
+    enabled: Mapped[bool] = mapped_column(default=True)  # False while stopped or ended
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # ended is permanent
     created_by: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=now)
 

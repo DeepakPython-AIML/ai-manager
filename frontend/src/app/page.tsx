@@ -1,12 +1,13 @@
 "use client";
 import Link from "next/link";
+import { AgentControls } from "@/components/AgentControls";
 import { Badge, Notice } from "@/components/ui";
 import { Agent, Run } from "@/lib/api";
 import { useApi, useAuth } from "@/lib/hooks";
 
 export default function Dashboard() {
   const { can } = useAuth();
-  const { data: agents, error } = useApi<Agent[]>("/agents", 3000);
+  const { data: agents, error, reload } = useApi<Agent[]>("/agents", 3000);
   const { data: runs } = useApi<Run[]>("/runs?limit=200", 3000);
   const count = (s: string[]) => runs?.filter((r) => s.includes(r.status)).length ?? 0;
   const stats: [string, number][] = [
@@ -26,11 +27,14 @@ export default function Dashboard() {
       <div className="stats">{stats.map(([label, n]) => <div className="stat" key={label}><b>{n}</b><span>{label}</span></div>)}</div>
       <div className="grid">
         {agents?.map((a) => (
-          <Link className="card" href={`/agents/${a.id}`} key={a.id}>
-            <div className="row"><b>{a.name}</b><Badge value={a.status ?? "idle"} /></div>
-            <p className="muted">{a.description || "No description"}</p>
-            <small className="muted">{a.total_runs} runs · approval: {a.approval_policy}</small>
-          </Link>
+          <div className="card" key={a.id}>
+            <Link className="card-link" href={`/agents/${a.id}`}>
+              <div className="row"><b>{a.name}</b><Badge value={a.status ?? "idle"} /></div>
+              <p className="muted">{a.description || "No description"}</p>
+              <small className="muted">{a.total_runs} runs · approval: {a.approval_policy}</small>
+            </Link>
+            <AgentControls agent={a} onChange={reload} />
+          </div>
         ))}
       </div>
       {agents?.length === 0 && <p className="muted">No agents yet.</p>}

@@ -281,18 +281,91 @@ async def test_disallowed_model_action_is_escalated(client, bedrock):
     assert run["proposal"]["action"] == "escalate_to_human" and run["status"] == "completed"
 
 
+async def new_agent(c, headers, name):
+    # Globex only: agents here stay stopped or ended, which must not affect the Acme tests.
+    r = await c.post("/api/agents", json={"name": name}, headers=headers)
+    assert r.status_code == 201
+    return r.json()
+
+
+async def status_of(c, headers, agent):
+    agents = (await c.get("/api/agents", headers=headers)).json()
+    return next(a["status"] for a in agents if a["id"] == agent["id"])
+
+
+async def agent_run(c, headers, agent):
+    return await c.post(f"/api/agents/{agent['id']}/runs", json={"input": ISSUE}, headers=headers)
+
+
 @pytest.mark.asyncio
-async def test_disabled_agent_refuses_runs(client):
-    op = await login(client, "operator@acme.test")
-    agent = (await client.get("/api/agents", headers=op)).json()[0]
-    async with sessions()() as s:
-        await s.execute(update(Agent).where(Agent.id == agent["id"]).values(enabled=False))
-        await s.commit()
-    r = await client.post(f"/api/agents/{agent['id']}/runs", json={"input": ISSUE}, headers=op)
-    assert r.status_code == 409
-    async with sessions()() as s:
-        await s.execute(update(Agent).where(Agent.id == agent["id"]).values(enabled=True))
-        await s.commit()
+async def test_stopped_agent_refuses_runs_until_started(client):
+    admin = await login(client, "admin@globex.test")
+    agent = await new_agent(client, admin, "Stoppable")
+    url = f"/api/agents/{agent['id']}"
+    assert (await client.post(f"{url}/stop", headers=admin)).status_code == 200
+    assert await status_of(client, admin, agent) == "stopped"
+    assert (await agent_run(client, admin, agent)).status_code == 409
+    assert (await client.post(f"{url}/start", headers=admin)).status_code == 200
+    assert await status_of(client, admin, agent) == "idle"
+    assert (await agent_run(client, admin, agent)).status_code == 202
+    await service.drain()
+
+
+@pytest.mark.asyncio
+async def test_ended_agent_is_kept_and_cannot_come_back(client):
+    admin = await login(client, "admin@globex.test")
+    agent = await new_agent(client, admin, "Endable")
+    url = f"/api/agents/{agent['id']}"
+    assert (await client.post(f"{url}/end", headers=admin)).status_code == 200
+    assert await status_of(client, admin, agent) == "ended"
+    assert (await client.get(url, headers=admin)).json()["ended_at"]
+    for call in (client.post(f"{url}/start", headers=admin), client.post(f"{url}/stop", headers=admin),
+                 client.post(f"{url}/end", headers=admin), client.patch(url, json={"name": "x"}, headers=admin),
+                 agent_run(client, admin, agent)):
+        assert (await call).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_stop_blocks_approval_but_not_rejection(client):
+    admin = await login(client, "admin@globex.test")
+    agent = await new_agent(client, admin, "Paused")
+    run_id = (await agent_run(client, admin, agent)).json()["id"]
+    await service.drain()
+    await client.post(f"/api/agents/{agent['id']}/stop", headers=admin)
+    url = f"/api/runs/{run_id}/decision"
+    assert (await client.post(url, json={"decision": "approved"}, headers=admin)).status_code == 409
+    assert (await client.post(url, json={"decision": "rejected"}, headers=admin)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_ending_agent_rejects_pending_approvals(client):
+    admin = await login(client, "admin@globex.test")
+    agent = await new_agent(client, admin, "Pending")
+    run_id = (await agent_run(client, admin, agent)).json()["id"]
+    await service.drain()
+    await client.post(f"/api/agents/{agent['id']}/end", headers=admin)
+    run = (await client.get(f"/api/runs/{run_id}", headers=admin)).json()
+    assert run["status"] == "rejected" and run["decision_note"] == "Agent was ended" and run["outcome"] is None
+
+
+@pytest.mark.asyncio
+async def test_action_does_not_run_if_agent_stopped_mid_run(client, bedrock):
+    admin = await login(client, "admin@globex.test")
+    agent = await new_agent(client, admin, "Racing")
+    bedrock.action = "create_ticket"  # needs no approval, so only the guard can stop it
+    r = await agent_run(client, admin, agent)
+    await client.post(f"/api/agents/{agent['id']}/stop", headers=admin)
+    await service.drain()
+    run = (await client.get(f"/api/runs/{r.json()['id']}", headers=admin)).json()
+    assert run["status"] == "failed" and "stopped" in run["error"] and run["outcome"] is None
+
+
+@pytest.mark.asyncio
+async def test_only_agent_managers_can_stop_or_end(client):
+    admin, viewer = await login(client, "admin@globex.test"), await login(client, "viewer@globex.test")
+    agent = await new_agent(client, admin, "Guarded")
+    for action in ("stop", "start", "end"):
+        assert (await client.post(f"/api/agents/{agent['id']}/{action}", headers=viewer)).status_code == 403
 
 
 def test_guardrails():

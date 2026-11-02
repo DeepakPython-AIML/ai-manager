@@ -93,7 +93,6 @@ class AgentUpdate(BaseModel):
     system_prompt: str | None = Field(default=None, max_length=4000)
     approval_policy: Literal["sensitive", "always"] | None = None
     allowed_actions: list[str] | None = None
-    enabled: bool | None = None
 
     _actions = field_validator("allowed_actions")(_check_actions)
 
@@ -109,11 +108,12 @@ class AgentOut(ORM):
     approval_policy: str
     allowed_actions: list[str]
     enabled: bool
+    ended_at: datetime | None
     created_at: datetime
 
 
 class AgentSummary(AgentOut):
-    status: Literal["idle", "busy", "awaiting_approval", "disabled"]
+    status: Literal["idle", "busy", "awaiting_approval", "stopped", "ended"]
     total_runs: int
 
 

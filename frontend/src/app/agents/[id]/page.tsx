@@ -1,6 +1,7 @@
 "use client";
 import { useParams, useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { AgentControls } from "@/components/AgentControls";
 import { AgentForm } from "@/components/AgentForm";
 import { RunsTable } from "@/components/RunsTable";
 import { Badge, Field, Notice } from "@/components/ui";
@@ -28,11 +29,6 @@ export default function AgentPage() {
     } catch (err) { setSubmitError((err as Error).message); setBusy(false); }
   }
 
-  async function toggle() {
-    await api(`/agents/${id}`, { method: "PATCH", body: { enabled: !agent?.enabled } });
-    reload();
-  }
-
   if (error) return <Notice>{error}</Notice>;
   if (!agent) return <p className="muted">Loading…</p>;
   return (
@@ -43,20 +39,27 @@ export default function AgentPage() {
           <p>{agent.description}</p>
           <p>Engines: Amazon Bedrock, then LangGraph + LangChain if it fails</p>
         </div>
-        {can("manage_agents") && (
-          <div className="actions">
+        <div className="actions">
+          {can("manage_agents") && !agent.ended_at && (
             <button onClick={() => setEditing(!editing)}>{editing ? "Close" : "Configure"}</button>
-            <button onClick={toggle}>{agent.enabled ? "Disable" : "Enable"}</button>
-          </div>
-        )}
+          )}
+          <AgentControls agent={agent} onChange={reload} />
+        </div>
       </div>
-      {!agent.enabled && <div style={{ marginBottom: 12 }}><Badge value="disabled" /></div>}
+      {!agent.enabled && (
+        <div style={{ marginBottom: 12 }}>
+          <Notice tone="neutral">
+            <Badge value={agent.ended_at ? "ended" : "stopped"} />{" "}
+            {agent.ended_at ? "This agent has ended and can't run again. Its history is kept." : "This agent is stopped. Start it to accept new requests."}
+          </Notice>
+        </div>
+      )}
       {editing && (
         <div className="panel" style={{ maxWidth: 620 }}>
           <AgentForm agent={agent} onSaved={() => { setEditing(false); reload(); }} />
         </div>
       )}
-      {can("run") && (
+      {can("run") && agent.enabled && (
         <div className="panel">
           <h2>New request</h2>
           {submitError && <Notice>{submitError}</Notice>}
@@ -64,7 +67,7 @@ export default function AgentPage() {
             <Field label="Describe the issue">
               <textarea required minLength={5} maxLength={2000} placeholder="What do you need help with?" value={input} onChange={(e) => setInput(e.target.value)} />
             </Field>
-            <div><button className="primary" disabled={busy || !agent.enabled}>{busy ? "Submitting…" : "Run agent"}</button></div>
+            <div><button className="primary" disabled={busy}>{busy ? "Submitting…" : "Run agent"}</button></div>
           </form>
         </div>
       )}
