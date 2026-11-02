@@ -3,7 +3,7 @@ import { ReactNode } from "react";
 const TONES: Record<string, string> = {
   idle: "neutral", completed: "good", approved: "good",
   busy: "info", queued: "info", running: "info", executing: "info", switching_engine: "warn",
-  awaiting_approval: "warn", failed: "bad", rejected: "bad", stopped: "warn", ended: "neutral",
+  awaiting_approval: "warn", failed: "bad", rejected: "bad", blocked: "bad", stopped: "warn", ended: "neutral",
 };
 
 export function Badge({ value }: { value: string }) {

@@ -52,6 +52,7 @@ export default function RunPage() {
               {can("run") && <button onClick={retry}>Retry run</button>}
             </div>
           )}
+          {run.status === "blocked" && <Notice>{run.error}</Notice>}
           {run.status === "rejected" && (
             <Notice tone="neutral">Rejected, so nothing was executed.{run.decision_note ? ` Note: ${run.decision_note}` : ""}</Notice>
           )}

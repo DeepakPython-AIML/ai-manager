@@ -10,7 +10,7 @@ export type Agent = {
   enabled: boolean; ended_at: string | null; created_at: string; total_runs?: number;
   status?: "idle" | "busy" | "awaiting_approval" | "stopped" | "ended";
 };
-export type RunStatus = "queued" | "running" | "switching_engine" | "awaiting_approval" | "executing" | "completed" | "rejected" | "failed";
+export type RunStatus = "queued" | "running" | "switching_engine" | "awaiting_approval" | "executing" | "completed" | "rejected" | "blocked" | "failed";
 export type RunEvent = {
   id: string; run_id: string | null; type: string; actor: string; message: string;
   data: Record<string, unknown> | null; created_at: string;

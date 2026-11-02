@@ -5,7 +5,7 @@ import { Notice } from "@/components/ui";
 import { Run } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 
-const FILTERS = ["all", "running", "awaiting_approval", "completed", "rejected", "failed"];
+const FILTERS = ["all", "running", "awaiting_approval", "completed", "rejected", "blocked", "failed"];
 
 export default function Runs() {
   const [filter, setFilter] = useState("all");

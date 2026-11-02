@@ -10,8 +10,11 @@ flowchart TD
   Q --> W[Agent worker on ECS]
   Q -. after retries .-> DLQ[Dead-letter queue]
   W --> DB
-  W -- first --> BR[Amazon Bedrock]
-  W -. if Bedrock fails .-> LG[LangGraph + LangChain] --> GQ[Groq]
+  W -- first --> BG[Bedrock Guardrails]
+  BG -- request and reply checked --> BR[Amazon Bedrock]
+  W -. if Bedrock fails .-> LG[LangGraph + LangChain]
+  LG --> MW[Guardrail middleware]
+  MW -- request and reply checked --> GQ[Groq]
   W --> CON[Action connectors]
   API --> CW[CloudWatch + X-Ray]
   W --> CW

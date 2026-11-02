@@ -15,6 +15,7 @@ export default function Dashboard() {
     ["In progress", count(["queued", "running", "executing"])],
     ["Awaiting approval", count(["awaiting_approval"])],
     ["Completed", count(["completed"])],
+    ["Blocked", count(["blocked"])],
     ["Failed", count(["failed"])],
   ];
   return (

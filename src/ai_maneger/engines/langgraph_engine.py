@@ -5,18 +5,22 @@
                  +------- approved ------> execute <--- no approval needed
 
 LangGraph only orchestrates, so this engine still needs a model: LangChain's ChatGroq, which keeps
-the fallback independent of AWS when Bedrock is the thing that failed.
+the fallback independent of AWS when Bedrock is the thing that failed. Each model call is a LangChain
+agent, so guardrail middleware wraps it.
 """
 from functools import lru_cache
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import PIIDetectionError
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 
 from ..config import get_settings
-from ..llm import LLMError, LLMPermanentError, parse_json
+from ..llm import GuardrailBlocked, LLMError, LLMPermanentError, parse_json
 from ..workflow import RunContext, State, analyse, execute, propose
+from .guardrail_middleware import MIDDLEWARE
 
 
 @lru_cache
@@ -27,16 +31,28 @@ def _chat(model: str):
     return ChatGroq(
         model=model, api_key=s.groq_api_key, temperature=0.1, max_tokens=800,
         timeout=s.llm_timeout_s, max_retries=s.llm_attempts,
-    ).bind(response_format={"type": "json_object"})
+        model_kwargs={"response_format": {"type": "json_object"}},
+    )
+
+
+@lru_cache
+def _agent(model: str):
+    return create_agent(_chat(model), tools=[], middleware=MIDDLEWARE)
 
 
 async def _complete(system: str, user: str, ctx: RunContext) -> dict:
-    chat = _chat(ctx.agent.fallback_model_id or get_settings().groq_model)
+    agent = _agent(ctx.agent.fallback_model_id or get_settings().groq_model)
     try:
-        reply = await chat.ainvoke([SystemMessage(system), HumanMessage(user)])
+        result = await agent.ainvoke({"messages": [SystemMessage(system), HumanMessage(user)]})
+    except GuardrailBlocked:
+        raise
+    except PIIDetectionError as e:
+        raise GuardrailBlocked("Sensitive data was blocked by the safety policy, so no action was taken.",
+                               [e.pii_type]) from e
     except Exception as e:  # noqa: BLE001 - provider SDK errors have no shared base class
         raise LLMError(f"LangChain {type(e).__name__}") from e
-    return parse_json(reply.content)
+    await ctx.emit("guardrail_passed", "Guardrail middleware passed the request and reply", {"engine": "langgraph"})
+    return parse_json(result["messages"][-1].content)
 
 
 def _ctx(config: RunnableConfig) -> RunContext:

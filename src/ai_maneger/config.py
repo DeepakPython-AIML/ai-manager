@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     )
     aws_region: str = "us-east-1"
     bedrock_model_id: str = "us.amazon.nova-lite-v1:0"
+    # Created by `python -m ai_maneger.bedrock_guardrail`. Without it, Bedrock refuses to call a model.
+    bedrock_guardrail_id: str = ""
+    bedrock_guardrail_version: str = "1"
 
     # Fallback engine (LangGraph + LangChain), used only when Bedrock fails.
     groq_api_key: SecretStr | None = None

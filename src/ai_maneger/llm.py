@@ -11,6 +11,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
+from .bedrock_guardrail import flagged_policies
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -28,8 +29,17 @@ class LLMPermanentError(LLMError):
     """Failure a retry cannot fix, such as missing permissions or an unknown model."""
 
 
+class GuardrailBlocked(Exception):
+    """A guardrail refused the request or reply. A policy decision, so it is never retried or rerouted."""
+
+    def __init__(self, message: str, policies: list[str]):
+        super().__init__(message)
+        self.message = message
+        self.policies = policies
+
+
 def _retryable(exc: BaseException) -> bool:
-    return not isinstance(exc, LLMPermanentError)
+    return not isinstance(exc, (LLMPermanentError, GuardrailBlocked))
 
 
 @lru_cache
@@ -50,12 +60,21 @@ def _bedrock():
 
 
 def _converse(system: str, user: str, model_id: str | None) -> str:
+    s = get_settings()
+    if not s.bedrock_guardrail_id:  # fail closed: no Bedrock model call happens without a guardrail
+        raise LLMPermanentError("Bedrock Guardrail is not configured")
     try:
         r = _bedrock().converse(
-            modelId=model_id or get_settings().bedrock_model_id,
+            modelId=model_id or s.bedrock_model_id,
             system=[{"text": system}],
-            messages=[{"role": "user", "content": [{"text": user}]}],
+            # guardContent limits the checks to the untrusted text, so the system prompt can't trip them.
+            messages=[{"role": "user", "content": [{"guardContent": {"text": {"text": user}}}]}],
             inferenceConfig={"maxTokens": 800, "temperature": 0.1},
+            guardrailConfig={
+                "guardrailIdentifier": s.bedrock_guardrail_id,
+                "guardrailVersion": s.bedrock_guardrail_version,
+                "trace": "enabled",
+            },
         )
     except ClientError as e:
         code = e.response["Error"]["Code"]
@@ -66,7 +85,10 @@ def _converse(system: str, user: str, model_id: str | None) -> str:
     except BotoCoreError as e:
         log.warning("Bedrock call failed: %s", e)
         raise LLMError(f"Bedrock {type(e).__name__}") from e
-    return r["output"]["message"]["content"][0]["text"]
+    text = r["output"]["message"]["content"][0]["text"]
+    if r.get("stopReason") == "guardrail_intervened":
+        raise GuardrailBlocked(text, flagged_policies(r.get("trace", {}).get("guardrail")))
+    return text
 
 
 def parse_json(text: str) -> dict[str, Any]:

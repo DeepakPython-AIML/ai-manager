@@ -1,8 +1,12 @@
 flowchart TD
-  S([New run]) --> B[Bedrock engine]
+  S([New run]) --> BG{Bedrock Guardrails}
+  BG -- passed --> B[Bedrock engine]
+  BG -- blocked --> K([blocked])
   B -- works --> G{Needs approval?}
   B -- fails --> M[3-second switching dialog]
-  M --> L[LangGraph + LangChain engine]
+  M --> LM{Guardrail middleware}
+  LM -- passed --> L[LangGraph + LangChain engine]
+  LM -- blocked --> K
   L -- works --> G
   L -- fails --> F([failed])
   G -- no --> E[Execute simulated action]

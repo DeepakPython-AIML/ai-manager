@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
 from .db import Agent, Run, RunEvent, now, sessions
 from .engines import ENGINE_ORDER, ENGINES
-from .llm import LLMError
+from .llm import GuardrailBlocked, LLMError
 from .workflow import AgentConfig, AgentInactive, RunContext, State
 
 log = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def _run_engine(name: str, run: Run, state: State, ctx: RunContext, status
                      f"{engine.label}: attempt {attempt}/{s.run_attempts}", actor="system")
         try:
             return await asyncio.wait_for(engine.run(state, ctx), s.run_timeout_s)
-        except (LLMError, AgentInactive):
+        except (LLMError, GuardrailBlocked, AgentInactive):
             raise
         except Exception as e:  # noqa: BLE001 - a run failure must never kill the worker
             log.exception("run %s attempt %s failed", run.id, attempt)
@@ -124,6 +124,12 @@ async def execute_run(run_id: str) -> None:
                 await _switch_engine(run, fallback, str(e))
                 continue
             break
+        except GuardrailBlocked as e:
+            # Final, on any engine: switching would just send blocked text to the other model.
+            await _patch(run_id, status="blocked", error=e.message)
+            await record(run.tenant_id, run_id, "guardrail_blocked", e.message,
+                         {"engine": name, "policies": e.policies}, actor="system")
+            return
         except AgentInactive as e:
             error = str(e)
             break
