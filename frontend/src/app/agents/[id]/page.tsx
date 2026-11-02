@@ -37,7 +37,7 @@ export default function AgentPage() {
         <div>
           <h1>{agent.name}</h1>
           <p>{agent.description}</p>
-          <p>Engines: Amazon Bedrock, then LangGraph + LangChain if it fails</p>
+          <p>Engines: Amazon Bedrock, then Groq if it fails</p>
         </div>
         <div className="actions">
           {can("manage_agents") && !agent.ended_at && (

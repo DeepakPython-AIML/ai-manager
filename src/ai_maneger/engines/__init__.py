@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from ..config import get_settings
 from ..workflow import RunContext, State
-from . import bedrock_engine, langgraph_engine
+from .strands_engine import run_bedrock, run_groq
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,9 @@ class Engine:
 
 
 ENGINES = {
-    "bedrock": Engine("bedrock", "Amazon Bedrock", "primary", bedrock_engine.run),
-    "langgraph": Engine("langgraph", "LangGraph + LangChain", "fallback", langgraph_engine.run),
+    "bedrock": Engine("bedrock", "Amazon Bedrock", "primary", run_bedrock),
+    "groq": Engine("groq", "Groq", "fallback", run_groq),
 }
-ENGINE_ORDER = ["bedrock", "langgraph"]
+ENGINE_ORDER = ["bedrock", "groq"]
+# Runs saved before the move to Strands can still be approved, and resume on the engine that replaced theirs.
+RENAMED_ENGINES = {"langgraph": "groq"}

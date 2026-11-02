@@ -39,11 +39,11 @@ export function AgentForm({ agent, onSaved }: { agent?: Agent; onSaved: (a: Agen
       <Field label="Description"><input maxLength={1000} value={form.description} onChange={set("description")} /></Field>
       <fieldset className="engines">
         <legend>Execution engines</legend>
-        <p className="muted">Both are ready on every agent. Bedrock runs first; if it fails, the run switches to LangGraph.</p>
+        <p className="muted">Both are ready on every agent. Bedrock runs first; if it fails, the run switches to Groq.</p>
         <Field label="1. Amazon Bedrock model (primary)" hint="Leave blank for the platform default">
           <input maxLength={200} placeholder={engines?.[0]?.default_model} value={form.model_id} onChange={set("model_id")} />
         </Field>
-        <Field label="2. LangGraph + LangChain model (fallback)" hint="Leave blank for the platform default">
+        <Field label="2. Groq model (fallback)" hint="Leave blank for the platform default">
           <input maxLength={200} placeholder={engines?.[1]?.default_model} value={form.fallback_model_id} onChange={set("fallback_model_id")} />
         </Field>
       </fieldset>

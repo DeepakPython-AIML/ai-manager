@@ -1,6 +1,6 @@
 """Agent logic shared by every engine: actions, prompts, guardrails and the steps themselves.
 
-Engines in `engines/` decide how the steps are orchestrated and which model answers them.
+Engines in `engines/` decide which model answers the steps and which guardrail protects it.
 """
 import asyncio
 from collections.abc import Awaitable, Callable

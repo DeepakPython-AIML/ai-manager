@@ -1,12 +1,11 @@
 # AI Agent Management Platform
 
 A small multi-tenant platform for registering AI agents, running them, watching what they do and
-approving their actions before they execute. It includes an IT Support Agent with two engines: Amazon
-Bedrock runs first, and LangGraph with LangChain takes over if Bedrock fails. Both have guardrails on every
-model call. Every action it takes is simulated; no real account is changed.
+approving their actions before they execute. It includes an IT Support Agent built on Strands Agents with two engines:
+Amazon Bedrock runs first, and Groq takes over if Bedrock fails. Both have guardrails on every model call. Every action it takes is simulated; no real account is changed.
 
 **Stack:** Next.js 16, React 19, TypeScript · Python 3.14, FastAPI, SQLAlchemy · Amazon Bedrock
-(Converse API, Guardrails) · LangGraph, LangChain middleware, Groq · SQLite locally, PostgreSQL on AWS
+(Converse API, Guardrails) · Strands Agents · Groq · SQLite locally, PostgreSQL on AWS
 
 ## Contents
 
@@ -34,7 +33,7 @@ uv run python -m ai_maneger.bedrock_guardrail   # add the two lines it prints to
 ```
 
 Without the guardrail settings the app still runs, but Bedrock refuses to call a model and every run goes to
-the LangGraph engine.
+the Groq engine.
 
 | Command | What it does |
 | --- | --- |
@@ -79,7 +78,7 @@ Sign in, create an organisation, or use a one-click demo account.
 
 ### Agent dashboard
 
-Registered agents, their status and run totals. This was taken before the LangGraph fallback was added, so its two runs show as failed.
+Registered agents, their status and run totals. This was taken before the fallback was added, so its two runs show as failed.
 
 ![Agent dashboard](snapshots/fullpage_snapshot_localhost_2026-11-02-04-00-09.png)
 
@@ -95,11 +94,11 @@ Type a request for the agent and see its engine order and recent runs.
 
 ![Submit a request](snapshots/fullpage_snapshot_localhost_2026-11-02-04-19-24.png)
 
-### Run switched to LangGraph
+### Run switched engine
 
-Bedrock failed, so the run continued on LangGraph + LangChain and completed. The banner and trace show why it switched.
+Bedrock failed, so the run continued on the fallback and completed. The banner and trace show why it switched. This was taken when the fallback used LangGraph; it now shows Groq.
 
-![Run switched to LangGraph](snapshots/fullpage_snapshot_localhost_2026-11-02-04-19-53.png)
+![Run switched engine](snapshots/fullpage_snapshot_localhost_2026-11-02-04-19-53.png)
 
 ### Run history
 
@@ -129,12 +128,12 @@ A failed run shows its reason and full trace, with a **Retry run** button. This 
 
 | Area | State |
 | --- | --- |
-| API, RBAC, tenant isolation, approvals, retries, engine switching, guardrails | Covered by 37 passing tests, with both engines stubbed |
+| API, RBAC, tenant isolation, approvals, retries, engine switching, guardrails | Covered by 38 passing tests, with both engines stubbed |
 | Frontend | Tested end to end in a real browser, including the switching dialog and approval |
-| LangGraph + LangChain engine | **Working.** Real model calls through Groq, including a full approval run |
-| Amazon Bedrock engine | **Blocked.** The AWS account is not authorised to call models (see below), so every run currently switches to LangGraph |
+| Groq engine on Strands | **Working.** Real model calls, tested through the API and in the browser |
+| Amazon Bedrock engine on Strands | **Blocked.** The AWS account is not authorised to call models (see below), so every run currently switches to Groq |
 | Bedrock Guardrail | **Created and tested** with `ApplyGuardrail` on 25 sample requests. Not yet tested on a real model reply through `Converse`, because of the block below |
-| LangChain guardrail middleware | **Working.** Tested with real Groq calls and in the browser |
+| Strands guardrail middleware | **Working.** Tested with real Groq calls and in the browser |
 | PostgreSQL, Cognito mode | Implemented but not yet run |
 
 ## Stop or end an agent
@@ -159,25 +158,26 @@ to use the platform defaults.
 
 1. Every new run tries **Amazon Bedrock** first. This includes re-runs from the **Retry run** button.
 2. If Bedrock fails, the run changes to `switching_engine`, and the run page shows a 3-second dialog:
-   "Switching to LangGraph and LangChain".
-3. The run then continues on **LangGraph + LangChain**, and the page shows which engine was used and why.
+   "Switching to Groq".
+3. The run then continues on **Groq**, and the page shows which engine was used and why.
 4. If both engines fail, the run is marked `failed`.
 
 Only model failures cause a switch. If an action itself fails, the engine is not changed, so an action is
 never repeated on the other engine. An approved action runs on the engine that proposed it. A guardrail block
 is not a failure and never causes a switch.
 
-LangGraph only orchestrates steps, so the fallback still needs a model. It uses LangChain's `ChatGroq` with
-`GROQ_API_KEY`, which keeps it working when AWS is the problem. **On the fallback, request text is sent to
+Both engines are [Strands Agents](https://strandsagents.com) and only the model differs. Bedrock uses
+`BedrockModel`. The fallback uses `OpenAIModel` pointed at Groq's API with `GROQ_API_KEY`, which keeps it
+working when AWS is the problem. Each model call is a new agent with no tools, so the model can only propose;
+the platform decides what runs. **On the fallback, request text is sent to
 Groq, outside AWS.** Without `GROQ_API_KEY`, a Bedrock failure ends the run as `failed`.
 
 The code is kept separate:
 
 | File | Purpose |
 | --- | --- |
-| `src/ai_maneger/engines/bedrock_engine.py` | Primary engine: agent steps on Bedrock Converse |
-| `src/ai_maneger/engines/langgraph_engine.py` | Fallback engine: LangGraph workflow with LangChain model calls |
-| `src/ai_maneger/engines/guardrail_middleware.py` | LangChain middleware guardrails for the fallback engine |
+| `src/ai_maneger/engines/strands_engine.py` | Both engines: Strands agents on Bedrock and Groq |
+| `src/ai_maneger/engines/guardrail_middleware.py` | Strands middleware: enforces Bedrock blocks and applies the Groq rules |
 | `src/ai_maneger/bedrock_guardrail.py` | Bedrock Guardrail policy and the command that creates it |
 | `src/ai_maneger/engines/__init__.py` | Engine registry and the order they are tried in |
 | `src/ai_maneger/workflow.py` | Shared actions, prompts, guardrails and agent steps |
@@ -209,9 +209,9 @@ AgentCore is not used by this code yet.
 Every model call is checked in both directions, the request before it and the reply after it. Each engine
 has its own guardrail:
 
-| | Bedrock flow | LangGraph flow |
+| | Bedrock flow | Groq flow |
 | --- | --- | --- |
-| Guardrail | Amazon Bedrock Guardrails, passed on every `Converse` call | LangChain middleware, through `create_agent` |
+| Guardrail | Amazon Bedrock Guardrails, passed on every `Converse` call | Strands middleware on `InvokeModelStage` |
 | How it decides | AWS classifiers | Fixed rules, run in this process |
 | Harmful content | Hate, insults, sexual content, violence, misconduct | Not covered |
 | Prompt attacks | `PROMPT_ATTACK` filter on the request | Known injection phrases, and a check that replies don't leak the prompt |
@@ -221,14 +221,14 @@ has its own guardrail:
 - **A block is final.** The run ends as `blocked` with no retry and no engine switch, because switching would
   send the blocked text to the other model. Nothing executes, and **Retry run** is not offered.
 - **The Bedrock flow fails closed.** With no guardrail configured, it makes no model call and the run moves to
-  the LangGraph engine, which has its own checks.
+  the Groq engine, which has its own checks.
 - **Blocks are audited.** A `guardrail_blocked` event records the engine and policy names, but never the
   matched text. Each passed call adds a `guardrail_passed` event to the trace.
 - **The agent's own prompt isn't checked on Bedrock.** Only the untrusted request is sent as `guardContent`,
   so the instructions in the prompt can't trigger a block. Replies are always checked.
 
 Guardrails are one layer. The action allowlist and human approval still apply to anything that gets through,
-and the LangGraph rules are simple patterns that reworded text can avoid. A blocked request stays in run
+and the Groq rules are simple patterns that reworded text can avoid. A blocked request stays in run
 history as it was typed, so a pasted secret is kept there.
 
 To change the Bedrock policy, edit `src/ai_maneger/bedrock_guardrail.py`, run
@@ -272,7 +272,7 @@ Diagram sources are in [docs/architecture.mmd](docs/architecture.mmd) and [docs/
 | Failed runs | Model calls retry on transient errors, then the run switches engine. Action failures retry with backoff. Failed runs can be re-run, and in-flight runs resume on startup | SQS with a dead-letter queue, plus idempotency keys on real connectors |
 | Audit and tracing | Append-only event log per run and tenant; request ids on every response | Export to S3 Object Lock; CloudWatch, X-Ray and Bedrock invocation logging |
 | Secrets | `.env` is git-ignored, keys are `SecretStr`, and tenants see only Bedrock error codes, not ARNs | Task roles and Secrets Manager, with no long-lived keys |
-| Prompt injection and unsafe content | User text is delimited and treated as data. Bedrock Guardrails or LangChain middleware check each model call, and the allowlist and approval gate limit the damage | Keep traffic on Bedrock, or put an in-AWS model and the same guardrail behind the fallback. Redact secrets from stored requests |
+| Prompt injection and unsafe content | User text is delimited and treated as data. Bedrock Guardrails or Strands middleware check each model call, and the allowlist and approval gate limit the damage | Keep traffic on Bedrock, or put an in-AWS model and the same guardrail behind the fallback. Redact secrets from stored requests |
 
 ### Supporting multiple customers securely
 
@@ -286,7 +286,7 @@ Diagram sources are in [docs/architecture.mmd](docs/architecture.mmd) and [docs/
 
 ## Summary
 
-**Completed:** the web app, REST API, IT Support Agent, Bedrock engine with LangGraph fallback, guardrails on
+**Completed:** the web app, REST API, IT Support Agent, Bedrock engine with Groq fallback on Strands Agents, guardrails on
 both, async execution, persistent history, approvals, retries, validation, tenant and role management, audit
 log and tests.
 

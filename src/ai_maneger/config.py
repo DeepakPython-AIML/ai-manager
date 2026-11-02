@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     bedrock_guardrail_id: str = ""
     bedrock_guardrail_version: str = "1"
 
-    # Fallback engine (LangGraph + LangChain), used only when Bedrock fails.
+    # Fallback engine, used only when Bedrock fails.
     groq_api_key: SecretStr | None = None
     groq_model: str = "openai/gpt-oss-20b"
     engine_switch_delay_s: float = 3

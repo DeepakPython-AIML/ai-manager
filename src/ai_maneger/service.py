@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
 from .db import Agent, Run, RunEvent, now, sessions
-from .engines import ENGINE_ORDER, ENGINES
+from .engines import ENGINE_ORDER, ENGINES, RENAMED_ENGINES
 from .llm import GuardrailBlocked, LLMError
 from .workflow import AgentConfig, AgentInactive, RunContext, State
 
@@ -107,7 +107,7 @@ async def execute_run(run_id: str) -> None:
     )
     state = {"input": run.input, "decision": run.decision, "analysis": run.analysis, "proposal": run.proposal}
     # An approved action stays on the engine that proposed it; anything else starts at Bedrock again.
-    order = [run.engine] if resuming else ENGINE_ORDER
+    order = [RENAMED_ENGINES.get(run.engine, run.engine)] if resuming else ENGINE_ORDER
     status = "executing" if resuming else "running"
     if not resuming:
         await _patch(run_id, fallback_reason=None)

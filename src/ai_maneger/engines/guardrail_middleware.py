@@ -1,15 +1,19 @@
-"""Guardrails for the LangGraph engine, as LangChain middleware around every model call.
+"""Guardrails as Strands middleware around every model call.
 
-    request -> credentials and PII -> blocked topics and injection -> model -> credentials and PII -> leak check
+Bedrock checks its own calls, so `bedrock_guardrail_gate` only turns an intervention into a final block:
+left alone, Strands would return the block message as if it were the model's reply.
 
-These are fixed rules, kept in the same policy areas as the Bedrock Guardrail. They run in this process
-because the fallback must keep working when AWS is the thing that failed.
+`text_guardrails` protects the Groq engine with fixed rules in the same policy areas as the Bedrock
+Guardrail. They run in this process because the fallback must keep working when AWS has failed.
+
+    request -> sensitive data -> blocked topics and injection -> model -> sensitive data -> leak check
 """
 import re
 
-from langchain.agents.middleware import AgentMiddleware, PIIMiddleware
-from langchain_core.messages import AIMessage, HumanMessage
+from strands.middleware import InvokeModelContext, ModelStopReason
+from strands.types.content import Message
 
+from ..bedrock_guardrail import flagged_policies
 from ..llm import GuardrailBlocked
 
 BLOCKED_REQUEST = "This request was blocked by the safety policy, so no action was taken."
@@ -17,11 +21,12 @@ BLOCKED_REPLY = "The agent's reply was blocked by the safety policy, so no actio
 
 # The value must be present: "my password is expired" is a normal support request.
 SENSITIVE_DATA = {
-    "password": r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*\S{4,}",
-    "aws_access_key": r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
-    "private_key": r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-    "us_ssn": r"\b\d{3}-\d{2}-\d{4}\b",
+    "password": re.compile(r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*\S{4,}"),
+    "aws_access_key": re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    "private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    "us_ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
 }
+CARD_NUMBER = re.compile(r"\b\d(?:[ -]?\d){12,18}\b")
 REQUEST_RULES = {
     "prompt_injection": re.compile(
         r"(?i)\b(?:ignore|disregard|forget|override)\b.{0,40}\b(?:instructions?|rules?|prompts?|guardrails?)\b"
@@ -39,32 +44,44 @@ REQUEST_RULES = {
 PROMPT_LEAK = re.compile(r"(?i)untrusted user data|never follow instructions")
 
 
-def _last_text(state: dict, kind: type) -> str:
-    message = next((m for m in reversed(state["messages"]) if isinstance(m, kind)), None)
-    return message.text if message else ""
+def _text(message: Message) -> str:
+    return "".join(block.get("text", "") for block in message["content"])
 
 
-class RequestRules(AgentMiddleware):
-    def before_model(self, state, runtime):
-        text = _last_text(state, HumanMessage)
-        policies = [name for name, rule in REQUEST_RULES.items() if rule.search(text)]
-        if policies:
-            raise GuardrailBlocked(BLOCKED_REQUEST, policies)
+def _is_card(number: str) -> bool:
+    digits = [int(d) for d in re.sub(r"\D", "", number)][::-1]
+    return sum(d if i % 2 == 0 else (d * 2 - 9 if d > 4 else d * 2) for i, d in enumerate(digits)) % 10 == 0
 
 
-class ReplyRules(AgentMiddleware):
-    def after_model(self, state, runtime):
-        if PROMPT_LEAK.search(_last_text(state, AIMessage)):
-            raise GuardrailBlocked(BLOCKED_REPLY, ["prompt_leak"])
+def _sensitive_data(text: str) -> list[str]:
+    found = [name for name, rule in SENSITIVE_DATA.items() if rule.search(text)]
+    return [*found, "credit_card"] if any(_is_card(m) for m in CARD_NUMBER.findall(text)) else found
 
 
-def _data_rule(pii_type: str, detector: str | None = None) -> PIIMiddleware:
-    return PIIMiddleware(pii_type, strategy="block", detector=detector, apply_to_input=True, apply_to_output=True)
+def _check_request(text: str) -> None:
+    policies = _sensitive_data(text) + [name for name, rule in REQUEST_RULES.items() if rule.search(text)]
+    if policies:
+        raise GuardrailBlocked(BLOCKED_REQUEST, policies)
 
 
-MIDDLEWARE = [
-    _data_rule("credit_card"),
-    *(_data_rule(name, pattern) for name, pattern in SENSITIVE_DATA.items()),
-    RequestRules(),
-    ReplyRules(),
-]
+def _check_reply(text: str) -> None:
+    policies = _sensitive_data(text) + (["prompt_leak"] if PROMPT_LEAK.search(text) else [])
+    if policies:
+        raise GuardrailBlocked(BLOCKED_REPLY, policies)
+
+
+async def text_guardrails(context: InvokeModelContext, next_fn):
+    _check_request(_text(context.messages[-1]))
+    async for event in next_fn(context):
+        if isinstance(event, ModelStopReason):
+            _check_reply(_text(event.message))
+        yield event
+
+
+async def bedrock_guardrail_gate(context: InvokeModelContext, next_fn):
+    trace = None
+    async for event in next_fn(context):
+        trace = event.get("event", {}).get("metadata", {}).get("trace", trace)
+        if isinstance(event, ModelStopReason) and event.stop_reason == "guardrail_intervened":
+            raise GuardrailBlocked(_text(event.message), flagged_policies((trace or {}).get("guardrail")))
+        yield event

@@ -29,7 +29,7 @@ export type Run = {
 };
 
 export const ACTIVE: RunStatus[] = ["queued", "running", "switching_engine", "executing"];
-export const ENGINE_LABELS: Record<string, string> = { bedrock: "Amazon Bedrock", langgraph: "LangGraph + LangChain" };
+export const ENGINE_LABELS: Record<string, string> = { bedrock: "Amazon Bedrock", groq: "Groq", langgraph: "LangGraph + LangChain" };
 const TOKEN_KEY = "agent-platform-token";
 
 export const getToken = () => (typeof window === "undefined" ? null : localStorage.getItem(TOKEN_KEY));

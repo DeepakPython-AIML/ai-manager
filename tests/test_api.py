@@ -7,20 +7,19 @@ os.environ["BEDROCK_GUARDRAIL_ID"] = "test-guardrail"
 os.environ["BEDROCK_GUARDRAIL_VERSION"] = "1"
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
 from botocore.exceptions import ClientError
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from strands.models import Model
 from sqlalchemy import update
 
 from ai_maneger import service
 from ai_maneger.config import get_settings
-from ai_maneger.db import Agent, init_db, sessions
-from ai_maneger.engines import langgraph_engine
+from ai_maneger.db import Agent, Run, init_db, sessions
+from ai_maneger.engines import strands_engine
 from ai_maneger.main import app
 from ai_maneger.seed import DEMO_PASSWORD, seed
 from ai_maneger.workflow import needs_approval, sanitise_action
@@ -29,7 +28,7 @@ ISSUE = "My account is locked and I can't access the company portal."
 
 
 def reply(payload: dict) -> dict:
-    return {"output": {"message": {"content": [{"text": json.dumps(payload)}]}}}
+    return {"stopReason": "end_turn", "output": {"message": {"role": "assistant", "content": [{"text": json.dumps(payload)}]}}}
 
 
 def aws_error(code: str) -> ClientError:
@@ -38,6 +37,8 @@ def aws_error(code: str) -> ClientError:
 
 class FakeBedrock:
     """Stands in for the bedrock-runtime client: no network or AWS credentials in tests."""
+
+    meta = SimpleNamespace(region_name="us-east-1", endpoint_url=None)
 
     def __init__(self):
         self.calls = 0
@@ -58,46 +59,61 @@ class FakeBedrock:
                 {"type": "PASSWORD", "match": "hunter2", "action": "BLOCKED"}
             ]}}}}
             return {"stopReason": "guardrail_intervened", "trace": {"guardrail": trace},
-                    "output": {"message": {"content": [{"text": "Blocked by policy"}]}}}
+                    "output": {"message": {"role": "assistant", "content": [{"text": "Blocked by policy"}]}}}
         if "triage IT support" in kwargs["system"][0]["text"]:
             return reply({"category": "access", "severity": "high", "summary": "Account locked"})
         return reply({"action": self.action, "resolution": "Unlock it", "target": "requester", "confidence": 0.9})
 
 
-class FakeChat(BaseChatModel):
-    """Stands in for LangChain's ChatGroq in the LangGraph engine."""
+class FakeChat(Model):
+    """Stands in for the Strands model that calls Groq."""
 
-    calls: int = 0
-    fail: bool = False
-    resolution: str = "Unlock it"
+    def __init__(self):
+        self.calls = 0
+        self.fail = False
+        self.resolution = "Unlock it"
 
-    @property
-    def _llm_type(self):
-        return "fake"
+    def update_config(self, **_):
+        pass
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+    def get_config(self):
+        return {}
+
+    async def structured_output(self, *_, **__):
+        raise NotImplementedError
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
         self.calls += 1
         if self.fail:
             raise ConnectionError("groq down")
-        if "triage IT support" in messages[0].content:
+        if "triage IT support" in system_prompt:
             payload = {"category": "access", "severity": "high", "summary": "Locked (fallback)"}
         else:
             payload = {"action": "unlock_account", "resolution": self.resolution, "target": "requester"}
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(json.dumps(payload)))])
+        yield {"messageStart": {"role": "assistant"}}
+        yield {"contentBlockDelta": {"delta": {"text": json.dumps(payload)}}}
+        yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "end_turn"}}
 
 
 @pytest.fixture(autouse=True)
 def bedrock(monkeypatch):
     fake = FakeBedrock()
-    monkeypatch.setattr("ai_maneger.llm._bedrock", lambda: fake)
+    build = strands_engine._bedrock_model.__wrapped__
+
+    def model(model_id):
+        built = build(model_id)
+        built.client = fake
+        return built
+
+    monkeypatch.setattr(strands_engine, "_bedrock_model", model)
     return fake
 
 
 @pytest.fixture(autouse=True)
 def chat(monkeypatch):
     fake = FakeChat()
-    monkeypatch.setattr("ai_maneger.engines.langgraph_engine._chat", lambda _model: fake)
-    langgraph_engine._agent.cache_clear()
+    monkeypatch.setattr(strands_engine, "_groq_model", lambda _model: fake)
     return fake
 
 
@@ -232,12 +248,12 @@ async def test_failed_run_retries_then_can_be_requeued(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bedrock_failure_switches_to_langgraph_and_completes(client, bedrock, chat):
+async def test_bedrock_failure_switches_to_groq_and_completes(client, bedrock, chat):
     bedrock.failures = [aws_error("AccessDeniedException")]
     op, approver = await login(client, "operator@acme.test"), await login(client, "approver@acme.test")
     run = await start(client, op)
     assert bedrock.calls == 1 and chat.calls == 2
-    assert run["status"] == "awaiting_approval" and run["engine"] == "langgraph"
+    assert run["status"] == "awaiting_approval" and run["engine"] == "groq"
     assert run["fallback_reason"] == "Bedrock AccessDeniedException"
     assert run["analysis"]["summary"] == "Locked (fallback)"
     assert "engine_switching" in [e["type"] for e in run["events"]]
@@ -246,8 +262,21 @@ async def test_bedrock_failure_switches_to_langgraph_and_completes(client, bedro
     await client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approved"}, headers=approver)
     await service.drain()
     done = (await client.get(f"/api/runs/{run['id']}", headers=op)).json()
-    assert done["status"] == "completed" and done["engine"] == "langgraph"
+    assert done["status"] == "completed" and done["engine"] == "groq"
     assert bedrock.calls == 1  # the approved action does not go back to Bedrock
+
+
+@pytest.mark.asyncio
+async def test_approval_from_before_strands_still_resumes(client):
+    op, approver = await login(client, "operator@acme.test"), await login(client, "approver@acme.test")
+    run = await start(client, op)
+    async with sessions()() as s:
+        await s.execute(update(Run).where(Run.id == run["id"]).values(engine="langgraph"))
+        await s.commit()
+    await client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approved"}, headers=approver)
+    await service.drain()
+    done = (await client.get(f"/api/runs/{run['id']}", headers=op)).json()
+    assert done["status"] == "completed" and done["engine"] == "groq"
 
 
 @pytest.mark.asyncio
@@ -261,7 +290,7 @@ async def test_run_fails_when_both_engines_fail(client, bedrock, chat):
     bedrock.failures = [aws_error("AccessDeniedException")]
     chat.fail = True
     run = await start(client, await login(client, "operator@acme.test"))
-    assert run["status"] == "failed" and "LangChain ConnectionError" in run["error"]
+    assert run["status"] == "failed" and "Groq ConnectionError" in run["error"]
 
 
 @pytest.mark.asyncio
@@ -400,7 +429,7 @@ async def test_every_bedrock_call_carries_the_guardrail(client, bedrock):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("step", [1, 2])
-async def test_bedrock_guardrail_block_is_final_and_never_reaches_langgraph(client, bedrock, chat, step):
+async def test_bedrock_guardrail_block_is_final_and_never_reaches_groq(client, bedrock, chat, step):
     bedrock.intervene_on = step  # 1 blocks the request at triage, 2 blocks the proposal
     op = await login(client, "operator@acme.test")
     run = await start(client, op)
@@ -417,7 +446,7 @@ async def test_bedrock_guardrail_block_is_final_and_never_reaches_langgraph(clie
 async def test_bedrock_without_a_guardrail_never_calls_the_model(client, bedrock, chat, monkeypatch):
     monkeypatch.setattr(get_settings(), "bedrock_guardrail_id", "")
     run = await start(client, await login(client, "operator@acme.test"))
-    assert bedrock.calls == 0 and run["engine"] == "langgraph" and run["status"] == "awaiting_approval"
+    assert bedrock.calls == 0 and run["engine"] == "groq" and run["status"] == "awaiting_approval"
     assert run["fallback_reason"] == "Bedrock Guardrail is not configured"
 
 
@@ -434,9 +463,9 @@ async def test_bedrock_without_a_guardrail_never_calls_the_model(client, bedrock
 async def test_middleware_blocks_request_before_the_model(client, bedrock, chat, text, policy):
     bedrock.failures = [aws_error("AccessDeniedException")]
     run = await start(client, await login(client, "operator@acme.test"), text)
-    assert run["status"] == "blocked" and run["engine"] == "langgraph" and chat.calls == 0
+    assert run["status"] == "blocked" and run["engine"] == "groq" and chat.calls == 0
     event = next(e for e in run["events"] if e["type"] == "guardrail_blocked")
-    assert policy in event["data"]["policies"] and event["data"]["engine"] == "langgraph"
+    assert policy in event["data"]["policies"] and event["data"]["engine"] == "groq"
 
 
 @pytest.mark.asyncio
@@ -458,8 +487,8 @@ async def test_middleware_blocks_unsafe_model_reply(client, bedrock, chat, resol
 async def test_middleware_allows_normal_support_requests(client, bedrock, chat, text):
     bedrock.failures = [aws_error("AccessDeniedException")]
     run = await start(client, await login(client, "operator@acme.test"), text)
-    assert run["status"] == "awaiting_approval" and run["engine"] == "langgraph"
-    assert [e["data"]["engine"] for e in run["events"] if e["type"] == "guardrail_passed"] == ["langgraph", "langgraph"]
+    assert run["status"] == "awaiting_approval" and run["engine"] == "groq"
+    assert [e["data"]["engine"] for e in run["events"] if e["type"] == "guardrail_passed"] == ["groq", "groq"]
 
 
 def test_guardrails():

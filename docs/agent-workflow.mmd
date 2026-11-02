@@ -1,11 +1,11 @@
 flowchart TD
-  S([New run]) --> BG{Bedrock Guardrails}
+  S([New run: Strands agent]) --> BG{Bedrock Guardrails}
   BG -- passed --> B[Bedrock engine]
   BG -- blocked --> K([blocked])
   B -- works --> G{Needs approval?}
   B -- fails --> M[3-second switching dialog]
   M --> LM{Guardrail middleware}
-  LM -- passed --> L[LangGraph + LangChain engine]
+  LM -- passed --> L[Groq engine]
   LM -- blocked --> K
   L -- works --> G
   L -- fails --> F([failed])

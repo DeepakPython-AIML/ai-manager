@@ -36,7 +36,7 @@ export default function RunPage() {
         <Badge value={run.status} />
       </div>
       {run.fallback_reason && run.status !== "switching_engine" && (
-        <Notice tone="warn">Amazon Bedrock failed ({run.fallback_reason}), so this run switched to LangGraph + LangChain.</Notice>
+        <Notice tone="warn">Amazon Bedrock failed ({run.fallback_reason}), so this run switched to Groq.</Notice>
       )}
       <div className="split">
         <div>

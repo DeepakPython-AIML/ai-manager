@@ -60,7 +60,7 @@ class Agent(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     kind: Mapped[str] = mapped_column(String(40), default="it_support")
     model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)  # Bedrock (primary)
-    fallback_model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)  # LangGraph engine
+    fallback_model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)  # Groq engine
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     approval_policy: Mapped[str] = mapped_column(String(20), default="sensitive")  # sensitive | always
     allowed_actions: Mapped[list] = mapped_column(JSON, default=list)

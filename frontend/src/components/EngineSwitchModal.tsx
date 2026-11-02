@@ -21,7 +21,7 @@ export function EngineSwitchModal({ active, reason }: { active: boolean; reason:
   return (
     <div className="modal-back">
       <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="switch-title">
-        <h2 id="switch-title">Switching to LangGraph and LangChain</h2>
+        <h2 id="switch-title">Switching to Groq</h2>
         <p className="muted">Amazon Bedrock is not available{reason ? ` (${reason})` : ""}. Your request will continue automatically.</p>
         <p>Switching in {left}s…</p>
         <div className="bar"><i /></div>
