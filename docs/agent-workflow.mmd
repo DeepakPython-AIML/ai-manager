@@ -1,0 +1,12 @@
+flowchart TD
+  S([New run]) --> B[Bedrock engine]
+  B -- works --> G{Needs approval?}
+  B -- fails --> M[3-second switching dialog]
+  M --> L[LangGraph + LangChain engine]
+  L -- works --> G
+  L -- fails --> F([failed])
+  G -- no --> E[Execute simulated action]
+  G -- yes --> W([awaiting_approval])
+  W -- approved --> E
+  W -- rejected --> X([rejected])
+  E --> D([completed])

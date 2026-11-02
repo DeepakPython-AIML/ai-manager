@@ -179,48 +179,16 @@ AgentCore is not used by this code yet.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  U[Browser] --> CF[CloudFront + WAF]
-  CF --> FE[Next.js on ECS Fargate]
-  CF --> GW[API Gateway]
-  U -. sign-in .-> COG[Cognito]
-  GW -- verifies JWT --> COG
-  GW --> API[FastAPI on ECS Fargate]
-  API --> DB[(RDS PostgreSQL)]
-  API --> Q[SQS run queue]
-  Q --> W[LangGraph worker on ECS]
-  Q -. after retries .-> DLQ[Dead-letter queue]
-  W --> DB
-  W -- first --> BR[Amazon Bedrock]
-  W -. if Bedrock fails .-> LG[LangGraph + LangChain] --> GQ[Groq]
-  W --> CON[Action connectors]
-  API --> CW[CloudWatch + X-Ray]
-  W --> CW
-  DB -. audit export .-> S3[S3 Object Lock]
-  SM[Secrets Manager] --> API
-  SM --> W
-```
+![Architecture diagram](docs/architecture.png)
 
 The repo today runs the API and worker in one process, with `asyncio` tasks in place of SQS. `service.spawn()`
 is the only line that would change.
 
 ### Agent workflow
 
-```mermaid
-flowchart LR
-  S([New run]) --> B[Bedrock engine]
-  B -- works --> G{Needs approval?}
-  B -- fails --> M[3-second switching dialog]
-  M --> L[LangGraph + LangChain engine]
-  L -- works --> G
-  L -- fails --> F([failed])
-  G -- no --> E[Execute simulated action]
-  G -- yes --> W([awaiting_approval])
-  W -- approved --> E
-  W -- rejected --> X([rejected])
-  E --> D([completed])
-```
+![Agent workflow diagram](docs/agent-workflow.png)
+
+Diagram sources are in [docs/architecture.mmd](docs/architecture.mmd) and [docs/agent-workflow.mmd](docs/agent-workflow.mmd).
 
 ### Key decisions
 
