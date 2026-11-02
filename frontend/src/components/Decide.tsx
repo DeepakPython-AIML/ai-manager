@@ -11,7 +11,6 @@ export function Decide({ run, onDone }: { run: Run; onDone: () => void }) {
   const [error, setError] = useState<string>();
 
   if (!can("approve")) return <Notice tone="neutral">Waiting for someone with the approver role.</Notice>;
-  if (run.requested_by === user.id) return <Notice tone="neutral">You submitted this, so someone else must decide.</Notice>;
 
   async function decide(decision: "approved" | "rejected") {
     setBusy(true);
@@ -25,6 +24,9 @@ export function Decide({ run, onDone }: { run: Run; onDone: () => void }) {
   return (
     <div className="form">
       {error && <Notice>{error}</Notice>}
+      {run.requested_by === user.id && (
+        <Notice tone="neutral">You submitted this request. Your decision will be marked in the audit log.</Notice>
+      )}
       <Field label="Note (optional)"><input maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
       <div className="actions">
         <button className="good" disabled={busy} onClick={() => decide("approved")}>Approve and execute</button>

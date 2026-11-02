@@ -42,7 +42,8 @@ class Settings(BaseSettings):
 
     run_timeout_s: float = 120
     run_attempts: int = 2
-    allow_self_approval: bool = False
+    # False enforces separation of duties: nobody can decide on a request they submitted.
+    allow_self_approval: bool = True
     seed_demo: bool = True
 
     def check(self) -> None:

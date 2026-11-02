@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy import update
 
 from ai_maneger import service
+from ai_maneger.config import get_settings
 from ai_maneger.db import Agent, init_db, sessions
 from ai_maneger.main import app
 from ai_maneger.seed import DEMO_PASSWORD, seed
@@ -142,14 +143,38 @@ async def test_tenant_isolation(client):
 
 
 @pytest.mark.asyncio
-async def test_rbac_and_separation_of_duties(client):
+async def test_rbac_and_self_decisions(client, monkeypatch):
     viewer, admin = await login(client, "viewer@acme.test"), await login(client, "admin@acme.test")
     agent = (await client.get("/api/agents", headers=viewer)).json()[0]
     r = await client.post(f"/api/agents/{agent['id']}/runs", json={"input": ISSUE}, headers=viewer)
     assert r.status_code == 403
+
     run = await start(client, admin)
-    r = await client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approved"}, headers=admin)
-    assert r.status_code == 403  # requester cannot approve their own run
+    url = f"/api/runs/{run['id']}/decision"
+    op = await login(client, "operator@acme.test")
+    assert (await client.post(url, json={"decision": "approved"}, headers=op)).status_code == 403
+
+    with monkeypatch.context() as m:  # strict mode enforces separation of duties
+        m.setattr(get_settings(), "allow_self_approval", False)
+        assert (await client.post(url, json={"decision": "approved"}, headers=admin)).status_code == 403
+
+    assert (await client.post(url, json={"decision": "approved"}, headers=admin)).status_code == 200
+    await service.drain()
+    done = (await client.get(f"/api/runs/{run['id']}", headers=admin)).json()
+    assert done["status"] == "completed"
+    event = next(e for e in done["events"] if e["type"] == "approved")
+    assert event["data"]["self_decision"] is True and "own request" in event["message"]
+
+
+@pytest.mark.asyncio
+async def test_admin_can_reject_own_request(client):
+    admin = await login(client, "admin@acme.test")
+    run = await start(client, admin)
+    r = await client.post(f"/api/runs/{run['id']}/decision", json={"decision": "rejected"}, headers=admin)
+    assert r.status_code == 200
+    await service.drain()
+    done = (await client.get(f"/api/runs/{run['id']}", headers=admin)).json()
+    assert done["status"] == "rejected" and done["outcome"] is None
 
 
 @pytest.mark.asyncio

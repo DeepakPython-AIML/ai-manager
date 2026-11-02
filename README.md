@@ -55,7 +55,8 @@ Tests need no AWS access: `uv run pytest`. API docs are at http://localhost:8000
 1. Sign in as **Operator**, open IT Support Agent, type a request and click **Run agent**. For example:
    "My account is locked after too many sign-in attempts."
 2. Watch the run trace update live. If Bedrock is unavailable, the switching dialog appears for 3 seconds.
-3. Sign out, sign in as **Approver**, and open **Approvals**.
+3. Sign out, sign in as **Approver** or **Admin**, and open **Approvals**. Only these two roles see the
+   **Approve and execute** and **Reject** buttons.
 4. Approve or reject. An approved run executes the simulated action and records its reference.
 5. Sign in as **Admin** and open **Organisation** to manage members and read the audit log.
 
@@ -207,7 +208,7 @@ Diagram sources are in [docs/architecture.mmd](docs/architecture.mmd) and [docs/
 | Authentication | JWT login with scrypt-hashed passwords. `AUTH_MODE=cognito` verifies Cognito tokens via JWKS | Cognito with SAML/OIDC SSO and MFA |
 | Authorisation | Server-side permission matrix: admin, operator, approver, viewer | Same, with roles from Cognito groups |
 | Tenant isolation | Tenant comes from the verified token, never the request. Every query is scoped, and other tenants' rows return 404 | Add PostgreSQL row-level security |
-| Human approval | Sensitive actions always need approval, and policy can only tighten this. Requesters can't approve their own runs | Add approval expiry and multi-step approval |
+| Human approval | Sensitive actions always need approval, and policy can only tighten this. Admins can decide on their own requests, and each such decision is marked in the audit log. Set `ALLOW_SELF_APPROVAL=false` to block this | Run with `ALLOW_SELF_APPROVAL=false`, and add approval expiry and multi-step approval |
 | Failed runs | Model calls retry on transient errors, then the run switches engine. Action failures retry with backoff. Failed runs can be re-run, and in-flight runs resume on startup | SQS with a dead-letter queue, plus idempotency keys on real connectors |
 | Audit and tracing | Append-only event log per run and tenant; request ids on every response | Export to S3 Object Lock; CloudWatch, X-Ray and Bedrock invocation logging |
 | Secrets | `.env` is git-ignored, keys are `SecretStr`, and tenants see only Bedrock error codes, not ARNs | Task roles and Secrets Manager, with no long-lived keys |

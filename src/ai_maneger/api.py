@@ -242,7 +242,8 @@ async def get_run(run_id: str, p: Principal = Depends(require("read")), session:
 async def decide(run_id: str, body: sc.Decision, p: Principal = Depends(require("approve")),
                  session: AsyncSession = Session):
     run = await scoped(session, Run, run_id, p)
-    if run.requested_by == p.user_id and not get_settings().allow_self_approval:
+    self_decision = run.requested_by == p.user_id
+    if self_decision and not get_settings().allow_self_approval:
         raise HTTPException(403, "You cannot decide on your own request")
     approved = body.decision == "approved"
     won = await transition(
@@ -252,8 +253,9 @@ async def decide(run_id: str, body: sc.Decision, p: Principal = Depends(require(
     )
     if not won:
         raise HTTPException(409, f"Run is '{run.status}', not awaiting approval")
-    await record(p.tenant_id, run.id, body.decision, f"{p.email} {body.decision} the action",
-                 {"note": body.note}, actor=p.user_id)
+    suffix = " on their own request" if self_decision else ""
+    await record(p.tenant_id, run.id, body.decision, f"{p.email} {body.decision} the action{suffix}",
+                 {"note": body.note, "self_decision": self_decision}, actor=p.user_id)
     if approved:
         spawn(run.id)
     return run
